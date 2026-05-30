@@ -1,8 +1,12 @@
 """
 Description: INITIALIZATION ETL pipeline transforming raw LEGO Excel data, enriching via Rebrickable API, and loading into PostgreSQL.
 Prerequisites:
-    - Directory structure: ....
-    - Third-party packages: ....
+    - Directory structure: 
+        ROOT/data/raw - Excel flat data
+        ROOT/scripts
+        ROOT/logs - control log files
+        ROOT/.env - personal passwords and keyz, personal real data about my lego collection
+    - Third-party packages: pip install enerything, what is not in -venv
 """
 
 import os
