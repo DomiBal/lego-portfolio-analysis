@@ -52,6 +52,10 @@ def parse_currency(val) -> float:
 def parse_date_slug(val) -> str:
     if pd.isna(val):
         return None
+    # Scenario A: Pandas already parsed the input as a native timestamp datetime object
+    if isinstance(val, (datetime, pd.Timestamp)):
+        return f"{val.year}-{val.month:02d}-01"
+    # Scenario B: Input is treated as a raw string text format
     slug = str(val).strip()
     if not re.match(r"^\d{1,2}/\d{4}$", slug):
         return None
