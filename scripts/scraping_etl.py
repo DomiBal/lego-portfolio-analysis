@@ -109,8 +109,16 @@ def fetch_rebrickable_specs(set_num: str) -> dict:
             specs["pieces"] = data.get("num_parts")
             specs["api_status"] = "Success"
             
-            # Map numerical theme_id returned from API into a standard string representation
-            specs["theme"] = f"Theme_ID_{data.get('theme_id')}"
+            # Map numerical theme_id returned from API into a standard string representation - real name
+            theme_id = data.get("theme_id")
+            if theme_id:
+                theme_url = f"https://rebrickable.com/api/v3/lego/themes/{theme_id}/"
+                theme_res = requests.get(theme_url, headers=headers, timeout=5)
+                if theme_res.status_code == 200:
+                    # Capture the actual human-readable theme name (e.g., 'Star Wars')
+                    specs["theme"] = theme_res.json().get("name", "Unknown")
+                else:
+                    specs["theme"] = f"Theme_ID_{theme_id}"
             
             # Sub-request to fetch exact minifigures count from the secondary API endpoint
             minifigs_url = f"{url}minifigs/"
@@ -121,8 +129,12 @@ def fetch_rebrickable_specs(set_num: str) -> dict:
             # Algorithmic fallback proxy for live market price calculation
             specs["market_price"] = float(data.get("num_parts", 0)) * 0.12
             
-            # Dynamic logical evaluation to determine if the set has reached End of Life (EOL)
-            specs["is_retired"] = data.get("year", 2026) < 2025
+            # Resolve current calendar year dynamically to prevent future hardcoding issues
+            current_calendar_year = datetime.now().year
+            set_release_year = data.get("year", current_calendar_year)
+            
+            # Dynamic EOL evaluation: if a set is older than 3 years from the current date, tag as retired
+            specs["is_retired"] = set_release_year < (current_calendar_year - 3)
 
         else:
             specs["api_status"] = f"HTTP_Error_{response.status_code}"
