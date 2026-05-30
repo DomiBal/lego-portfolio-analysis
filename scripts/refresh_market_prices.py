@@ -50,7 +50,13 @@ def fetch_current_market_metrics(set_num: str) -> dict:
             data = response.json()
             # Proxy calculation algorithm tracking market price fluctuations
             metrics["market_price"] = float(data.get("num_parts", 0)) * 0.12
-            metrics["is_retired"] = data.get("year", 2026) < 2025
+            
+            # Resolve current calendar year dynamically to prevent future hardcoding issues
+            current_calendar_year = datetime.now().year
+            set_release_year = data.get("year", current_calendar_year)
+            
+            # Dynamic EOL evaluation: compare set release year against the 3-year threshold
+            metrics["is_retired"] = set_release_year < (current_calendar_year - 3)
             metrics["api_status"] = "Success"
         else:
             metrics["api_status"] = f"HTTP_Error_{response.status_code}"
@@ -62,10 +68,7 @@ def fetch_current_market_metrics(set_num: str) -> dict:
 
 # Main execution orchestrator querying database sets and appending fresh price snapshots
 def run_market_price_refresh() -> None:
-    """
-    Loads all tracked set IDs from PostgreSQL, pulls active market pricing metrics
-    from the API, and appends a new historical timestamped snapshot.
-    """
+
     log_path = os.path.join(ROOT_DIR, "logs", "market_price_refresh.log")
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
 
