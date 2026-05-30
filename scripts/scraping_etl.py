@@ -11,6 +11,8 @@ import pandas as pd
 import unicodedata
 import re
 import requests
+from datetime import datetime
+from sqlalchemy import create_engine
 
 # Setup paths based on your exact ROOT layout
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -20,6 +22,9 @@ ROOT_DIR = os.path.dirname(SCRIPT_DIR)  # Moves up from scripts to ROOT
 load_dotenv(os.path.join(ROOT_DIR, ".env"))
 API_KEY = os.getenv("REBRICKABLE_API_KEY")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
+
+# Dynamic configuration for the source data asset with a safe sample fallback
+SOURCE_EXCEL_NAME = os.getenv("SOURCE_EXCEL_NAME", "LEGO_sets_sample.xlsx")
 
 # Database configurations
 DB_USER = "postgres"
@@ -58,7 +63,6 @@ def parse_date_slug(val) -> str:
 
 # Fetch comprehensive specifications and current market value from Rebrickable API
 def fetch_rebrickable_specs(set_num: str) -> dict:
-
     # Default data structure mapping all required variables
     specs = {
         "set_name": "Unknown",
@@ -119,3 +123,112 @@ def fetch_rebrickable_specs(set_num: str) -> dict:
         specs["api_status"] = f"Connection_Failed: {str(e)}"
         
     return specs
+
+# Main execution orchestrator loading configured excel, enriching data via API and loading into PostgreSQL
+def lego_initial_import() -> None:
+    # Define production paths for logging purposes
+    log_path = os.path.join(ROOT_DIR, "logs", "lego_initial_import.log")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+    # Isolated inner helper function for standardized logging
+    def write_log(msg: str) -> None:
+        line = f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}"
+        print(line)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+    write_log("=== START LEGO INITIAL IMPORT PIPELINE ===")
+    
+    # Resolve source path dynamically using environment variable configuration
+    source_file = os.path.join(ROOT_DIR, "data", "raw", SOURCE_EXCEL_NAME)
+    write_log(f"Target runtime file resolved from configuration: {SOURCE_EXCEL_NAME}")
+    
+    # Fail-safe check to ensure input data asset is present
+    if not os.path.exists(source_file):
+        write_log(f"FATAL ERROR: Source data file is missing at: {source_file}")
+        return
+        
+    try:
+        write_log(f"Extracting source rows from file: {source_file}")
+        # Read from sheet 'LEGO_sets', skipping first 20 structural formatting rows
+        df_raw = pd.read_excel(source_file, sheet_name="LEGO_sets", skiprows=20)
+        
+        # Drop rows where critical primary locator 'Set' identifier is missing
+        df_raw = df_raw.dropna(subset=["Set"])
+        df_raw = df_raw[df_raw["Set"].astype(str).str.lower() != "n/a"]
+        
+        write_log(f"Staging area successfully initialized with {len(df_raw)} unique source rows.")
+        
+        # Staging lists to accumulate records for our 3NF target tables
+        records_sets = []
+        records_purchases = []
+        records_market_history = []
+        
+        # Capture current snapshot date for the historical pricing trend baseline
+        current_snapshot_date = datetime.now().strftime("%Y-%m-%d")
+        
+        # Loop through each row in the spreadsheet to transform and enrich
+        for _, row in df_raw.iterrows():
+            set_id = str(row["Set"]).strip().split(".")[0]
+            write_log(f"Transforming and enriching data for set ID: {set_id} | {row['Názov setu']}")
+            
+            # Call the upgraded API client module from Phase 2
+            api_data = fetch_rebrickable_specs(set_id)
+            
+            # 1. Populate Dimension structure (Dim_Sets)
+            records_sets.append({
+                "set_id": set_id,
+                "set_name": api_data["set_name"] if api_data["set_name"] != "Unknown" else str(row["Názov setu"]).strip(),
+                "theme": str(row["Séria"]).strip() if pd.notna(row["Séria"]) else api_data["theme"],
+                "release_year": api_data["release_year"],
+                "pieces": api_data["pieces"],
+                "minifigs": int(row["Minifigs"]) if pd.notna(row["Minifigs"]) else api_data["minifigs_count"]
+            })
+            
+            # 2. Populate Transactional Fact structure (Fact_Purchases)
+            records_purchases.append({
+                "set_id": set_id,
+                "purchase_price": parse_currency(row["Cena"]),
+                "purchase_date": parse_date_slug(row["Dátum"]),
+                "owner": str(row["Majiteľ"]).strip(),
+                "buyer": str(row["Platba"]).strip()
+            })
+            
+            # 3. Populate Historical Pricing Fact structure (Fact_Market_History)
+            if api_data["api_status"] == "Success":
+                records_market_history.append({
+                    "set_id": set_id,
+                    "snapshot_date": current_snapshot_date,
+                    "market_price": api_data["market_price"],
+                    "is_retired": api_data["is_retired"]
+                })
+
+        # Convert structures to clean DataFrames and deduplicate dimension members
+        df_dim_sets = pd.DataFrame(records_sets).drop_duplicates(subset=["set_id"])
+        df_fact_purchases = pd.DataFrame(records_purchases)
+        df_fact_market = pd.DataFrame(records_market_history)
+        
+        # Build relational connection engine to target PostgreSQL instance
+        conn_str = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+        engine = create_engine(conn_str)
+        
+        write_log("Streaming structured staging tables into target PostgreSQL database instance...")
+        
+        # Write tables out (using replace for initial catalog setup generation)
+        df_dim_sets.to_sql("dim_sets", engine, if_exists="replace", index=False)
+        write_log(f"Database catalog sync complete: dim_sets loaded ({len(df_dim_sets)} rows)")
+        
+        df_fact_purchases.to_sql("fact_purchases", engine, if_exists="replace", index=False)
+        write_log(f"Database catalog sync complete: fact_purchases loaded ({len(df_fact_purchases)} records)")
+        
+        df_fact_market.to_sql("fact_market_history", engine, if_exists="replace", index=False)
+        write_log(f"Database catalog sync complete: fact_market_history initiated ({len(df_fact_market)} entries)")
+        
+        write_log("=== INITIAL IMPORT PIPELINE FINISHED SUCCESSFULLY ===")
+        
+    except Exception as e:
+        write_log(f"FATAL SYSTEM ERROR OCCURRED: {repr(e)}")
+
+# Script execution entry point
+if __name__ == "__main__":
+    lego_initial_import()
