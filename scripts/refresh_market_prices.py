@@ -33,10 +33,6 @@ DB_NAME = "lego_portfolio"
 
 # Fetch fresh market specifications from Rebrickable API for price tracking
 def fetch_current_market_metrics(set_num: str) -> dict:
-    """
-    Queries the Rebrickable API for a single set ID to fetch its current 
-    estimated market valuation and retirement (EOL) status.
-    """
     metrics = {"market_price": None, "is_retired": False, "api_status": "Not_Executed"}
     
     if not API_KEY:
